@@ -1,0 +1,261 @@
+---
+title: "feedingMarkAnalyzeR"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{feedingMarkAnalyzeR}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+author: "Naoyuki Sotta"
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+
+This package loads result files from the ImageJ macro. See []() for the upstream analysis.  
+In this vignette we demonstrate how to load the results from upstream analysis to extract insect feeding parameters and to visualize their feeding patterns. 
+
+
+## Library  
+
+```{r setup-hidden, message=FALSE, echo=FALSE}
+library(knitr)
+```
+
+
+```{r setup, message=FALSE}
+library(feedingMarkAnalyzeR)
+library(data.table)
+library(ggplot2)
+```
+
+
+
+
+
+## Test dataset   
+
+To load the results of image analysis, we need to set four file path to your data.  
+For the test data, set the input paths as follows:
+
+```{r path-setting}
+# Root directory of the sample dataset. Replace this with your project directory.   
+example_data_path <- system.file("extdata", package = "feedingMarkAnalyzeR")
+
+# Path to the directory that contains .xls files from the ImageJ macro
+xls_path <- file.path(example_data_path,"measurement")
+# Path to the directory that contains .png files from the ImageJ macro
+mask2_path <- file.path(example_data_path,"mask2")
+# Path to the ROI file which was used for running the ImageJ macro.
+roi_path <- file.path(example_data_path,"roi","RoiSet.zip")
+# Path to the .csv file that contains ROI annotation. 
+roi_info_path <- file.path(example_data_path,"roi","roi_info.csv")
+
+# Output file for visualization output
+vis_output_path <- file.path(example_data_path,"output","feeding_mark_vis")
+dir.create(vis_output_path,recursive = T)
+```
+
+You should already have three of the files/directories above after running the ImageJ script.  
+A new file you need here is `roi_info.csv`, which annotate ROIs. It must have `roi` column, that has serial numbers corresponding to ROI number in the `.xls` files. In the test data, it has additional `genotype` column. You may have multiple columns depending on the design of your experiment. These fields will be added to each measurement result and can be used for plotting later by users.  
+
+```{r}
+roi_info <- read.csv(roi_info_path)
+kable(roi_info)
+```
+
+## Load image analysis results    
+
+You can assign `area_convertion_rate` to convert area values in ImageJ output `.xls` to any unit you like.  
+The test images have 266 DPI, and the `.xls` files have area in pixel^2.  
+The following example converts pixel^2 to mm^2.   
+
+```{r load-data}
+# DPI in the scanned images.  
+dpi <- 300
+
+leaf_area <- makeLeafAreaTable(xls_path,
+                               name_pat = "^feeding_track_[0-9]*",
+                               roi_info_file = roi_info_path,
+                               frame_interval = 1,
+                               area_convertion_rate = (25.4 / dpi) ^2  )
+```
+The resultant `data.table` has 6 columns from the `.xls` files, and additional columns from `roi_info.csv` (`genotype` in this example).  
+
+```{r}
+kable(head(leaf_area))
+```
+
+`LeafArea` column is the converted leaf area (mm^2 in this example) for each `roi` and each `time` frame ( = `frame` * `frame_interval`).    
+
+## Visualize leaf area reduction over time   
+
+The time-course changes of the leaf area can be visualized as follows:  
+
+```{r plot-raw-data,fig.width=8, fig.height=4,out.width="100%"}
+ggplot(leaf_area,
+       aes(x = time, y = LeafArea, colour = genotype)) +
+  geom_line() +
+  xlab("Time [min]") +
+  theme_classic()
+```
+
+
+Because the initial leaf area varies among assays, the plot starts from different points. If you would like to visualize the leaf area relative to the initial leaf area, you can align the start point by using `alingStart()`. 
+
+```{r}
+# Align start positions
+leaf_area_aligned <- alignStart(leaf_area)
+
+head(leaf_area_aligned)
+```
+
+
+```{r plot-start-aligned,fig.width=8, fig.height=4,out.width="100%"}
+ggplot(leaf_area_aligned,
+       aes(x = time, y = decrease, colour = genotype)) +
+  geom_line() +
+  xlab("Time [min]") +
+  theme_classic()
+```
+
+
+## Feeding events  
+
+To detect feeding events from the profiles of leaf area changes, we take time difference of the leaf area using `makeDeltaLeafAreaTable()`. 
+
+```{r process-data}
+# Diff (t -> t+1)
+leaf_area_delta <- makeDeltaLeafAreaTable(leaf_area)
+```
+
+From the resultant time difference information, `getPeaksAllRoi()` detects feeding events, by searching peaks in the time difference of the leaf area. 
+
+```{r}
+peaks <- getPeaksAllRoi(leaf_area_delta,
+                        thr_start = 0.05,
+                        thr_end = 0.02)
+
+kable(head(peaks))
+```
+`peaks` data.frame contains feeding parameters for each assay, which you can use for your downstream analysis (summaryze, statistical analysis, etc.). One row represents one feeding event. It contains `start` and `end` time of the feeding event. `no` is the order of the feeding event for each `roi`. `width` is the width of the detected peak, that represent duration of the feeding event. `rate` represents leaf area consumed per time. `interval` represent the time between start of the feeding event and end of the last feeding event (or start of the assay for the first feeding event.)     
+
+    
+The detected peak area can be visualized as follows:   
+
+```{r peak-detection-fig,fig.width=8, fig.height=4,out.width="100%"}
+ggplot(leaf_area_delta) +
+  geom_line(mapping = aes(x = time, y = delta, colour = genotype),
+            linewidth = 0.2) +
+  geom_rect(data = peaks,
+            mapping = aes(xmin = start-1, xmax = end, ymin = 0, ymax = Inf, fill = genotype), 
+            alpha = 0.1) +
+  geom_text(data = peaks,
+            mapping = aes(x = start, y = 0, label = round(area, digits = 1)),
+            size = 1,
+            angle = 45,
+            hjust = 1) +
+  facet_grid(genotype~.) +
+  scale_x_continuous(name = "Time [min]") +  
+  scale_y_continuous(name = expression("-ΔLeaf area [mm"^2*" min"^-1*"]")) +
+  theme_classic() +
+  theme(legend.position = "none")
+```
+
+
+If the default setting does not detect feeding events correctly, two parameters for peak detection can be adjusted:  
+
+`thr_start`   If the values go higher than this value, it is regarded as a peak.    
+`thr_end`   The peak ends if the value go lower than this value.  
+
+To our experience, the beginning of the assay (first ~30 min.) tends to have false-positive detection of feeding events, due to slight movement of the leaf or insect body captured at the first frame. If you have apparent false-positive detection even after optimizing the peak detection parameters, consider omitting the peaks detected in the beginning of the assay.   
+
+## Feeding mark visualization   
+
+This package also provides functions for spatio-temporal analysis of feeding events.  
+The following example visualizes feeding marks of detected above for one assay (roi 1):   
+
+```{r feeding-mark-visualization}
+drawFeedingMark(peaks = peaks,
+                   roi_number = 1,
+                   image_dir = mask2_path,
+                   roi_path = roi_path,
+                   out_dir = vis_output_path)
+```
+
+This generates `.png` files in `vis_output_path`. Each image file represents one feeding events. The latest feeding mark is highlighted with magenta. Leaf area reduced by other than the latest feeding event (i.e. previous feeding events, leaf shrinkage, etc.) is highlighted with cyan.     
+
+```{r  fig.show = "hold", out.width = "40%", fig.align = "default",warning=FALSE,echo=FALSE}
+include_graphics(
+  file.path(vis_output_path,
+            paste0("diff_",formatC(1:4,flag = "0", width = 3),".png"))
+)
+```
+
+## Visualization of feedign site history  
+
+`drawFeedingMark()` also generates `feeding_mark_center_pos.csv` in `vis_output_path`. The file contains coordinates of center of gravity for each feeding mark, and distances between the feeding marks.   
+
+
+```{r}
+center_pos <- fread(file.path(vis_output_path,"feeding_mark_center_pos.csv"))
+kable(center_pos)
+```
+
+Using the coordinates of the feeding marks, we can summarize the feeding history on 2D plot.  
+
+```{r}
+# Convert pixel to mm
+center_pos[,mx_mm := mx/dpi*25.4]
+center_pos[,my_mm := my/dpi*25.4]
+center_pos[,dist_mm := dist/dpi*25.4]
+```
+
+
+```{r fig.width=8, fig.height=4,out.width="80%"}
+ggplot(center_pos,
+       aes(x = mx_mm, y = my_mm, colour = mark_no)) +
+    geom_path() +
+    geom_text(aes(label = mark_no),
+              size = 3) +
+    coord_fixed(ratio = 1) +
+    scale_x_continuous(name = "[mm]",
+                       breaks = seq(0,40,5)) +
+    scale_y_continuous(name  = "[mm]",
+                       breaks = seq(0,40,5),
+                       trans = "reverse") +
+    scale_color_gradientn(colours = rainbow(12),
+                          name = "Order of feeding",
+                          guide = "none",
+                          limits = c(1,nrow(center_pos))) +
+  theme_classic()
+```
+
+## Visualize distance between feeding sites     
+
+Because `center_pos` data.table contains distances between consecutive feeding sites, we can visualize the distance from the previous feeding sites over time.  
+
+```{r fig.width=8, fig.height=4,out.width="80%"}
+# Time-distance plot
+ggplot(center_pos, 
+       aes(x = start_time, y = dist_mm, fill = mark_no)) +
+  scale_x_continuous(name = "Time [min]",
+                     limits = c(0,300)) +
+  scale_y_continuous(name = "Distance from the last feeding mark [mm]",
+                     expand = expansion(mult = c(0,0.05), add = c(0,0)) ) +
+  scale_fill_gradientn(colours = rainbow(12),
+                        name = "Order of feeding",
+                       guide = "legend",
+                       breaks = 1:nrow(center_pos),
+                       limits = c(1,nrow(center_pos))) +
+  geom_col() +
+  theme_classic()
+```
+
+
+
+

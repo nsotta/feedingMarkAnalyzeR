@@ -1,0 +1,26 @@
+Package: feedingMarkAnalyzeR
+Type: Package
+Title: Quantify/Visualize Insect Feeding Behavior from Time-series Leaf Images
+Version: 0.0.0.9000
+Author: Naoyuki Sotta
+Maintainer: Naoyuki Sotta <nsotta@gmail.com>
+Description: This R package is a part of image analysis pipeline for quantification of insect feeding parameters on leaf (cite-publication-here). It loads masked leaf images and .xls files that are produced by ImageJ macro `feeding_mark_analyzer`.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 7.2.3
+Suggests: 
+    knitr,
+    rmarkdown,
+    ggplot2,
+VignetteBuilder: knitr
+Imports: 
+    data.table,
+    gsubfn,
+    imager,
+    png,
+    RImageJROI,
+    stringr,
+    tibble,
+    tidyr,
+    dplyr
